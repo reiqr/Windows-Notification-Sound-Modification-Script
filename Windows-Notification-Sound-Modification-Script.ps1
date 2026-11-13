@@ -37,7 +37,7 @@ function ReadEventLabelsFromJsonFile {
     param ()
     $eventLabelsJsonFilePath = Join-Path $PSScriptRoot 'EventLabels.json'
     if (Test-Path -LiteralPath $eventLabelsJsonFilePath) {
-        return Get-Content -LiteralPath $eventLabelsJsonFilePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return Get-Content -LiteralPath $eventLabelsJsonFilePath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     } else {
         throw [System.IO.FileNotFoundException]::new("未找到事件标签配置文件：$eventLabelsJsonFilePath")
     }
@@ -48,7 +48,7 @@ function GetAllToneFilesInfo {
         [string]$toneFolderPath
     )
     $fileHashTable = @{}
-    $toneFiles = Get-ChildItem -LiteralPath $toneFolderPath -Filter *.wav -File
+    $toneFiles = Get-ChildItem -LiteralPath $toneFolderPath -Filter *.wav -File -ErrorAction Stop
     foreach ($toneFile in $toneFiles) {
         $toneFileNameWithoutExtension = [System.IO.Path]::GetFileNameWithoutExtension($toneFile.Name)
         $toneFileAbsPath = $toneFile.FullName
@@ -107,11 +107,15 @@ function CreateAppEventsSchemesNamesByPackageName {
         $path = "HKCU:\AppEvents\Schemes\Names\$pkgId"
         $i = $i + 1
     } while (
-        Test-Path -LiteralPath $path
+        Test-Path -LiteralPath $path -ErrorAction Stop
     )
 
-    New-Item -Path $path -Force | Out-Null
-    New-ItemProperty -Path $path -Name "(Default)" -Value $tonePackageName -PropertyType "String" -Force | Out-Null
+    New-Item -Path $path -Force -ErrorAction Stop | Out-Null
+    New-ItemProperty -Path $path -Name "(Default)" -Value $tonePackageName -PropertyType "String" -Force -ErrorAction Stop | Out-Null
+    $registeredName = Get-ItemPropertyValue -LiteralPath $path -Name '(Default)' -ErrorAction Stop
+    if ($registeredName -cne $tonePackageName) {
+        throw "声音方案名称写入校验失败：$path"
+    }
     return $pkgId
 }
 
@@ -121,16 +125,23 @@ function SetTone {
         [string]$currentRegistryItem,
         [string]$toneFilePath
     )
-    if (!(Test-Path -LiteralPath $registryItem)) {
-        New-Item -Path $registryItem -Force | Out-Null
+    if (!(Test-Path -LiteralPath $registryItem -ErrorAction Stop)) {
+        New-Item -Path $registryItem -Force -ErrorAction Stop | Out-Null
     }
-    if (!(Test-Path -LiteralPath $currentRegistryItem)) {
-        New-Item -Path $currentRegistryItem -Force | Out-Null
+    if (!(Test-Path -LiteralPath $currentRegistryItem -ErrorAction Stop)) {
+        New-Item -Path $currentRegistryItem -Force -ErrorAction Stop | Out-Null
     }
 
-    Set-ItemProperty -Path $registryItem -Name "(Default)" -Value $toneFilePath
-    Set-ItemProperty -Path $currentRegistryItem -Name "(Default)" -Value $toneFilePath
-    return (Test-Path -LiteralPath $registryItem) -and (Test-Path -LiteralPath $currentRegistryItem)
+    Set-ItemProperty -LiteralPath $registryItem -Name '(Default)' -Value $toneFilePath -ErrorAction Stop
+    Set-ItemProperty -LiteralPath $currentRegistryItem -Name '(Default)' -Value $toneFilePath -ErrorAction Stop
+
+    foreach ($path in @($registryItem, $currentRegistryItem)) {
+        $registeredTone = Get-ItemPropertyValue -LiteralPath $path -Name '(Default)' -ErrorAction Stop
+        if ($registeredTone -cne $toneFilePath) {
+            throw "提示音路径写入校验失败：$path"
+        }
+    }
+    return $true
 }
 
 try {
@@ -154,14 +165,14 @@ try {
     $tonePackageName = Split-Path $toneFolderPath -Leaf
     Write-Host "已找到提示音包：$tonePackageName"
 
-    $TonePackageId = CreateAppEventsSchemesNamesByPackageName -tonePackageName $tonePackageName
-
     $allToneFilesInfo = GetAllToneFilesInfo -toneFolderPath $toneFolderPath
     Write-Host "已找到 $($allToneFilesInfo.Keys.Count) 个 .wav 提示音文件。"
 
     if ($allToneFilesInfo.Keys.Count -eq 0) {
         throw "指定文件夹中没有 .wav 文件，请检查后重新运行。"
     }
+
+    $TonePackageId = CreateAppEventsSchemesNamesByPackageName -tonePackageName $tonePackageName
 
     $setCount = 0
     $skippedCount = 0
@@ -201,7 +212,9 @@ try {
     }
 } catch {
     Write-Host "运行失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "操作已停止；此前已写入的设置不会自动恢复。" -ForegroundColor Yellow
     Write-Host "窗口不会自动关闭，请根据上面的提示检查文件或路径。" -ForegroundColor Yellow
 } finally {
     Read-Host "按 Enter 键退出"
 }
+
